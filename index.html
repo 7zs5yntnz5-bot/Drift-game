@@ -1,0 +1,147 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Open World Driving Prototype</title>
+<style>
+html,body,#renderCanvas{width:100%;height:100%;margin:0;overflow:hidden;background:#111;font-family:Arial}
+#ui{position:fixed;inset:0;pointer-events:none;color:white}
+.panel{pointer-events:auto;background:rgba(10,15,20,.82);border:1px solid #556;border-radius:14px;padding:20px;box-shadow:0 10px 40px #000}
+#menu{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:300px;text-align:center}
+button,select{width:100%;padding:12px;margin:7px 0;border:0;border-radius:8px;background:#2676c8;color:#fff;font-size:16px;cursor:pointer}
+button:hover{background:#3c91e6}
+#hud{position:absolute;left:18px;top:18px;display:none}
+#speed{font-size:34px;font-weight:bold}
+#hint{font-size:13px;opacity:.85}
+#settings,#garage{position:absolute;right:18px;top:18px;width:250px;display:none}
+label{display:block;margin-top:10px;font-size:13px}
+input{width:100%}
+#touchControls{display:none;position:fixed;inset:0;pointer-events:none}
+.touch{position:absolute;bottom:22px;display:flex;gap:12px;pointer-events:auto}
+.touch.left{left:18px}.touch.right{right:18px}
+.touch button{width:62px;height:62px;border-radius:50%;font-size:24px;touch-action:none;user-select:none;-webkit-user-select:none}
+#camTouch{font-size:12px}
+@media (pointer:coarse), (max-width:800px){
+ #touchControls{display:block}
+ #hud{left:8px;top:8px;padding:10px}
+ #speed{font-size:24px}
+ #hint{display:none}
+ #menu{width:min(86vw,330px)}
+ .panel{border-radius:12px}
+ canvas{touch-action:none}
+}
+</style>
+</head>
+<body>
+<canvas id="renderCanvas"></canvas>
+<div id="ui">
+  <div id="menu" class="panel"><h1>DRIVE</h1><div id="status" style="font-size:12px;opacity:.8;margin-bottom:8px">Loading game…</div><button id="play">Play</button><button id="garageBtn">Garage</button><button id="settingsBtn">Settings</button></div>
+  <div id="hud" class="panel"><div id="speed">0 km/h</div><div id="weatherText">Sunny • Day</div><div id="hint">Desktop: WASD/Arrows • Mobile: touch controls</div></div>
+<div id="touchControls">
+  <div class="touch left"><button data-key="a">◀</button><button data-key="d">▶</button></div>
+  <div class="touch right"><button data-key="s">▼</button><button data-key="w">▲</button><button id="camTouch">CAM</button></div>
+</div>
+  <div id="garage" class="panel"><h2>Garage</h2><label>Car color <input id="color" type="color" value="#cc2020"></label><label>Engine upgrade <input id="power" type="range" min="0.7" max="1.8" value="1" step=".1"></label><button id="garageBack">Back</button></div>
+  <div id="settings" class="panel"><h2>Settings</h2><label>Weather <select id="weather"><option>Sunny</option><option>Rain</option><option>Fog</option></select></label><label>Shadows <select id="shadows"><option>On</option><option>Off</option></select></label><button id="settingsBack">Back</button></div>
+</div>
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script>
+
+// UI works independently from the 3D engine.
+const menu=document.getElementById("menu"), hud=document.getElementById("hud");
+const garage=document.getElementById("garage"), settings=document.getElementById("settings");
+const statusEl=document.getElementById("status");
+document.getElementById("play").addEventListener("click",()=>{
+  if(!window.BABYLON){ statusEl.textContent="Game engine is still loading. Check your internet connection and try again."; return; }
+  menu.style.display="none"; hud.style.display="block";
+});
+document.getElementById("garageBtn").addEventListener("click",()=>{menu.style.display="none";garage.style.display="block"});
+document.getElementById("settingsBtn").addEventListener("click",()=>{menu.style.display="none";settings.style.display="block"});
+document.getElementById("garageBack").addEventListener("click",()=>{garage.style.display="none";menu.style.display="block"});
+document.getElementById("settingsBack").addEventListener("click",()=>{settings.style.display="none";menu.style.display="block"});
+
+const canvas=document.getElementById("renderCanvas");
+const engine=new BABYLON.Engine(canvas,true,{preserveDrawingBuffer:true,stencil:true});
+let scene, car, carBody, speed=0, yaw=0, cameraMode=0, rain=[], weather="Sunny", power=1;
+const keys={};
+addEventListener("keydown",e=>{keys[e.key.toLowerCase()]=true;if(e.key.toLowerCase()==="c")cameraMode=1-cameraMode;if(e.key.toLowerCase()==="r")resetCar();});
+addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
+function mat(name,color,metal=0,rough=.7){let m=new BABYLON.StandardMaterial(name,scene);m.diffuseColor=BABYLON.Color3.FromHexString(color);m.specularColor=new BABYLON.Color3(metal,metal,metal);m.roughness=rough;return m}
+function road(x,z,w,d){let g=BABYLON.MeshBuilder.CreateGround("road",{width:w,height:d},scene);g.position.set(x,.01,z);g.material=mat("asphalt","#24272a");return g}
+function box(name,x,y,z,w,h,d,color){let b=BABYLON.MeshBuilder.CreateBox(name,{width:w,height:h,depth:d},scene);b.position.set(x,y,z);b.material=mat(name+"m",color);return b}
+function createCar(){
+ car=new BABYLON.TransformNode("car",scene);car.position.set(0,.55,0);
+ carBody=box("body",0,0,0,2,0.55,4,"#cc2020");carBody.parent=car;
+ let cabin=box("cabin",0,.5,-.1,1.55,.65,2.0,"#8aaac0");cabin.parent=car;
+ for(let x of [-.85,.85])for(let z of [-1.35,1.35]){let wh=BABYLON.MeshBuilder.CreateCylinder("wheel",{diameter:.72,height:.35,tessellation:16},scene);wh.rotation.z=Math.PI/2;wh.position.set(x,-.28,z);wh.parent=car;wh.material=mat("tire","#111");}
+}
+function building(x,z,w,d,h){let b=box("building",x,h/2,z,w,h,d,["#777d85","#a49b8f","#69737c"][Math.floor(Math.random()*3)]);return b}
+function createWorld(){
+ let ground=BABYLON.MeshBuilder.CreateGround("world",{width:2000,height:2000},scene);ground.material=mat("ground","#49613c");
+ for(let i=-800;i<=800;i+=80){road(i,0,42,1700);road(0,i,1700,42)}
+ for(let i=-720;i<=720;i+=80){for(let j=-720;j<=720;j+=80){if(Math.abs(i)<80||Math.abs(j)<80)continue;building(i+Math.random()*25,j+Math.random()*25,20+Math.random()*25,20+Math.random()*25,20+Math.random()*90)}}
+ // highway/tunnel
+ road(0,-420,80,700);
+ for(let z=-720;z<=-120;z+=80){box("tunnel",0,10,z,80,20,8,"#555");}
+ // parking lot
+ road(180,140,180,120);
+ // traffic lights
+ for(let x of [-25,25])for(let z of [-25,25]){let pole=box("pole",x,4,z,.35,8,.35,"#333");let lamp=box("light",x,7,z,.8,1.8,.8,"#222");}
+}
+function trafficCar(x,z,axis){
+ let t=new BABYLON.TransformNode("traffic",scene);t.position.set(x,.5,z);let b=box("trafficBody",0,0,0,1.7,.5,3.5,["#2266cc","#dddddd","#d8a020"][Math.floor(Math.random()*3)]);b.parent=t;t.metadata={axis,dir:Math.random()<.5?1:-1};return t
+}
+let traffic=[];
+function createTraffic(){for(let i=0;i<24;i++){let axis=i%2;traffic.push(trafficCar(axis?(-700+Math.random()*1400):(-15+Math.random()*30),axis?(-15+Math.random()*30):(-700+Math.random()*1400),axis));}}
+function resetCar(){car.position.set(0,.55,0);speed=0;yaw=0;car.rotation.y=0}
+function setupWeather(){
+ rain.forEach(r=>r.dispose());rain=[];
+ if(weather==="Rain")for(let i=0;i<500;i++){let r=BABYLON.MeshBuilder.CreateLines("rain",{points:[new BABYLON.Vector3(0,0,0),new BABYLON.Vector3(0,-1,0)]},scene);r.position.set((Math.random()-.5)*80,Math.random()*30,(Math.random()-.5)*80);r.color=new BABYLON.Color3(.6,.7,.9);rain.push(r)}
+}
+function createScene(){
+ scene=new BABYLON.Scene(engine);scene.clearColor=new BABYLON.Color3(.55,.72,.88);
+ let light=new BABYLON.DirectionalLight("sun",new BABYLON.Vector3(-.4,-1,.3),scene);light.position=new BABYLON.Vector3(100,200,-100);light.intensity=1.2;
+ new BABYLON.HemisphericLight("sky",new BABYLON.Vector3(0,1,0),scene).intensity=.45;
+ createWorld();createCar();createTraffic();
+ let cam=new BABYLON.FollowCamera("follow",new BABYLON.Vector3(0,8,-15),scene);cam.lockedTarget=car;cam.radius=14;cam.heightOffset=5;cam.rotationOffset=180;cam.cameraAcceleration=.06;cam.maxCameraSpeed=20;scene.activeCamera=cam;cam.attachControl(canvas,true);
+ scene.onBeforeRenderObservable.add(()=>{
+   const dt=Math.min(engine.getDeltaTime()/1000,.05);
+   let accel=(keys.w||keys.arrowup)?1:0, reverse=(keys.s||keys.arrowdown)?1:0, brake=keys[" "]?1:0, steer=((keys.a||keys.arrowleft)?1:0)-((keys.d||keys.arrowright)?1:0);
+   speed += (accel*18*power-reverse*12*power-brake*35-speed*.42)*dt;
+   if(Math.abs(speed)<.02)speed=0;
+   yaw += steer*Math.min(Math.abs(speed)/12,1.5)*dt*(speed>=0?1:-1);
+   car.rotation.y=yaw;car.position.x+=Math.sin(yaw)*speed*dt;car.position.z+=Math.cos(yaw)*speed*dt;
+   // soft world boundary/collision proxy
+   if(Math.abs(car.position.x)>930||Math.abs(car.position.z)>930){speed*=-.25;car.position.x=Math.max(-930,Math.min(930,car.position.x));car.position.z=Math.max(-930,Math.min(930,car.position.z));}
+   scene.activeCamera.position.y = cameraMode?car.position.y+1.15:scene.activeCamera.position.y;
+   if(cameraMode){scene.activeCamera.radius=1.2;scene.activeCamera.heightOffset=1.2;scene.activeCamera.rotationOffset=180}else{scene.activeCamera.radius=14;scene.activeCamera.heightOffset=5}
+   traffic.forEach(t=>{let v=8*dt*t.metadata.dir;if(t.metadata.axis){t.position.x+=v;if(Math.abs(t.position.x)>840)t.position.x*=-1}else{t.position.z+=v;if(Math.abs(t.position.z)>840)t.position.z*=-1}});
+   let time=performance.now()/1000;let daylight=.45+.55*Math.sin(time*.02);light.intensity=Math.max(.12,daylight*1.4);scene.clearColor=new BABYLON.Color3(.08+.45*daylight,.12+.55*daylight,.2+.65*daylight);
+   if(weather==="Fog")scene.fogMode=BABYLON.Scene.FOGMODE_EXP2,scene.fogDensity=.012,scene.fogColor=scene.clearColor;else scene.fogMode=BABYLON.Scene.FOGMODE_NONE;
+   if(weather==="Rain")rain.forEach(r=>{r.position.y-=18*dt;if(r.position.y<0){r.position.y=30;r.position.x=car.position.x+(Math.random()-.5)*70;r.position.z=car.position.z+(Math.random()-.5)*70}});
+   document.getElementById("speed").textContent=Math.round(Math.abs(speed)*3.6)+" km/h";
+   document.getElementById("weatherText").textContent=weather+" • "+(daylight>.45?"Day":"Night");
+ });
+ return scene;
+}
+
+document.getElementById("color").oninput=e=>carBody.material.diffuseColor=BABYLON.Color3.FromHexString(e.target.value);
+document.getElementById("power").oninput=e=>power=+e.target.value;
+document.getElementById("weather").onchange=e=>{weather=e.target.value;setupWeather()};
+
+// Mobile touch controls
+const touchButtons=document.querySelectorAll("[data-key]");
+touchButtons.forEach(btn=>{
+ const k=btn.dataset.key;
+ const on=e=>{e.preventDefault();keys[k]=true};
+ const off=e=>{e.preventDefault();keys[k]=false};
+ btn.addEventListener("touchstart",on,{passive:false});
+ btn.addEventListener("touchend",off,{passive:false});
+ btn.addEventListener("touchcancel",off,{passive:false});
+ btn.addEventListener("pointerdown",on);btn.addEventListener("pointerup",off);btn.addEventListener("pointercancel",off);
+});
+document.getElementById("camTouch").addEventListener("click",()=>cameraMode=1-cameraMode);
+scene=createScene();setupWeather();statusEl.textContent="Ready";engine.runRenderLoop(()=>scene.render());addEventListener("resize",()=>engine.resize());
+</script>
+</body></html>
